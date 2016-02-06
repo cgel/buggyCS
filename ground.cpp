@@ -7,70 +7,128 @@
 #include "joystick.hh"
 
 #define BUGGY_IP "127.0.0.1"
+//#define BUGGY_IP "192.168.1.165"
 #define PORT 6000
 
+using namespace std;
 using asio::ip::udp;
 
+using Input = boost::array<short int, 2>;
+
+// connects and communicates with the buggy
 class Comms {
-public:
-  Comms() : socket(io) {
-    // initialize connection
+ public:
+  Comms(asio::io_service& io_s, string ip, const Input& input_holder_)
+      : socket(io_s),
+        send_period(boost::posix_time::milliseconds(30)),
+        input_holder(input_holder_),
+        send_input_timer(io_s, send_period) {
+    // setup connection
     udp::resolver resolver(io);
     buggy_endpoint = *resolver.resolve(udp::resolver::query(
-                          udp::v4(), BUGGY_IP, std::to_string(PORT)));
+                          udp::v4(), ip, std::to_string(PORT)));
     socket.open(udp::v4());
-  }
-  void send(boost::array<short int, 2> &msg) {
-    socket.send_to(asio::buffer(msg), buggy_endpoint);
+
+    // setup async callback
+    send_input_timer.async_wait(boost::bind(&Comms::send, this));
   }
 
-private:
+  void send() {
+    socket.send_to(asio::buffer(input_holder), buggy_endpoint);
+    // setup async callback
+    send_input_timer.expires_at(send_input_timer.expires_at() + send_period);
+    send_input_timer.async_wait(boost::bind(&Comms::send, this));
+    cout << "sending: " << input_holder[0] << " - " << input_holder[1] << endl;
+  }
+
+ private:
+  asio::deadline_timer send_input_timer;
+  boost::posix_time::milliseconds send_period;
   asio::io_service io;
   udp::socket socket;
   udp::endpoint buggy_endpoint;
+  const Input& input_holder;
 };
 
-class Command {
-public:
-  Command() : joystick("/dev/input/js0") {}
+// asynchronously updates the contents of the inut holder with the commands
+// given by joysticks or driving wheels
+class Interface {
+ public:
+  Interface(asio::io_service& io_s)
+      : sample_period(5), sample_input_timer(io_s, sample_period) {
+    sample_input_timer.async_wait(boost::bind(&Interface::sample, this));
+    // default input
+    open_controller();
+    set_default_input();
+  }
 
+  ~Interface() {
+    if (controller != nullptr) {
+      delete controller;
+    }
+  }
   void sample() {
-    int count = 0;
-    while (count < 20) {
-      ++count;
-      usleep(100);
+    if (controller != nullptr) {
       JoystickEvent event;
-      if (joystick.sample(&event)) {
-        // if (event.isAxis() && (event.number == 0 || event.number == 13))
+
+      if (controller->sample(&event)) {
+        // an event
+        cout << "event - " << (int)event.number << endl;
         if (event.number == 0 || event.number == 13) {
+          // an event of interest
           int val = (int)(event.value * (256.0 / 32767.0));
-          if (event.number == 13)
-            input[0] = val;
-          else
-            input[1] = val;
+          if (event.number == 13) {
+            input_holder[0] = val;
+          } else {
+            input_holder[1] = val;
+          }
         }
       }
+    } else {
+      set_default_input();
+    }
+    // async callback to sample in the next sample_period
+    sample_input_timer.expires_at(sample_input_timer.expires_at() +
+                                  sample_period);
+    sample_input_timer.async_wait(boost::bind(&Interface::sample, this));
+  }
+
+  void set_default_input() {
+    input_holder[0] = 0;
+    input_holder[1] = 0;
+  }
+
+  void open_controller() {
+    // Joystic class sucks so i have to do this hack
+    // if Joystic is assigned it does not sample
+    auto joy = new Joystick;
+    if (joy->isFound()) {
+      cout << "Controller Connected" << endl;
+      controller = joy;
+    } else {
+      cout << "failed openning" << endl;
+      delete joy;
     }
   }
 
-  boost::array<short int, 2> input;
+  Input input_holder;
 
-private:
-  Joystick joystick;
+ private:
+  asio::deadline_timer sample_input_timer;
+  boost::posix_time::milliseconds sample_period;
+  Joystick* controller;
 };
 
-int main(int argc, char *argv[]) {
-  Comms comms;
-  Command cmd;
+int main(int argc, char* argv[]) {
+  asio::io_service io_s;
   try {
-    while (1) {
-      cmd.sample();
-      comms.send(cmd.input);
-      usleep(10000);
-      std::cout << cmd.input[0] << " - " << cmd.input[1] << std::endl;
-    }
+    Interface interface(io_s);
+    Comms comms(io_s, BUGGY_IP, interface.input_holder);
+    // asio::deadline_timer no_input_failsafe_timer(io_s,
+    //                                             boost::posix_time::seconds(1));
+    io_s.run();
   }
-  catch (std::exception &e) {
+  catch (std::exception& e) {
     std::cerr << e.what() << std::endl;
   }
   return 0;
