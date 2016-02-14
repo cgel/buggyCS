@@ -6,7 +6,7 @@
 #include <string>
 #include "joystick.hh"
 
-#define BUGGY_IP "127.0.0.1"
+#define DEF_BUGGY_IP "127.0.0.1"
 //#define BUGGY_IP "192.168.1.165"
 #define PORT 6000
 
@@ -73,7 +73,7 @@ class Interface {
 
       if (controller->sample(&event)) {
         // an event
-        cout << "event - " << (int)event.number << endl;
+        //        cout << "event - " << (int)event.number << endl;
         if (event.number == 0 || event.number == 13) {
           // an event of interest
           int val = (int)(event.value * (256.0 / 32767.0));
@@ -120,10 +120,18 @@ class Interface {
 };
 
 int main(int argc, char* argv[]) {
+  string buggy_ip;
+  cout << "argc " << argc << endl;
+  if (argc > 1) {
+    buggy_ip = argv[1];
+  } else {
+    buggy_ip = DEF_BUGGY_IP;
+  }
   asio::io_service io_s;
+  cout << "the buggy ip is: " << buggy_ip << endl;
   try {
     Interface interface(io_s);
-    Comms comms(io_s, BUGGY_IP, interface.input_holder);
+    Comms comms(io_s, buggy_ip, interface.input_holder);
     // asio::deadline_timer no_input_failsafe_timer(io_s,
     //                                             boost::posix_time::seconds(1));
     io_s.run();
